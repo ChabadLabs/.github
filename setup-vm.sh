@@ -587,10 +587,24 @@ fi
 if ! step_done 15; then
   if command -v claude &>/dev/null; then
     echo "==> [15/$TOTAL_STEPS] Authenticating Claude Code..."
-    echo "    Claude Code needs to sign in to your Anthropic account."
-    echo "    Follow the prompts below:"
     echo ""
-    claude auth login
+    echo "    To get a permanent API token, run this command in a"
+    echo "    separate terminal (or open a new SSH session):"
+    echo ""
+    echo "      claude setup-token"
+    echo ""
+    echo "    Follow the prompts there — it will give you a token."
+    echo "    Then paste it here when ready."
+    echo ""
+    read -rp "    Paste your Claude API token: " CLAUDE_TOKEN
+    if [ -n "$CLAUDE_TOKEN" ]; then
+      mkdir -p "$HOME/.config/gabayai"
+      echo "$CLAUDE_TOKEN" > "$HOME/.config/gabayai/api-key"
+      chmod 600 "$HOME/.config/gabayai/api-key"
+      echo "    Token saved. /gabayai-core:setup will use it when creating .env"
+    else
+      echo "    No token entered — you can set ANTHROPIC_API_KEY later during setup."
+    fi
   else
     echo "    [skip] Claude Code not installed — skipping authentication"
   fi

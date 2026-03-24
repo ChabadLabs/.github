@@ -1,12 +1,12 @@
-name: Request Access to GabayAI
-description: Request access to the GabayAI skills marketplace for shluchim
+name: Request Access to GabAI
+description: Request access to the GabAI skills marketplace for shluchim
 title: "Access Request: [Your Name]"
 labels: ["access-request"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thank you for your interest in GabayAI! Please fill out the information below
+        Thank you for your interest in GabAI! Please fill out the information below
         and we'll get you set up.
   - type: input
     id: name
@@ -32,7 +32,7 @@ body:
   - type: textarea
     id: use_case
     attributes:
-      label: What are you hoping to use GabayAI for?
+      label: What are you hoping to use GabAI for?
       placeholder: "I'd like to set up a WhatsApp bot for my community that can..."
     validations:
       required: false

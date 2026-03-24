@@ -12,9 +12,9 @@ Your AI-powered command center — tools, resources, and a community of builders
 
 **Fund Builders** — We fund shluchim who build. If you have a working project or a solid idea, apply for a grant.
 
-## GabayAI
+## GabAI
 
-A personal Shlichus AI assistant that runs on WhatsApp, powered by [Nanoclaw](https://github.com/qwibitai/nanoclaw). GabayAI helps shluchim with scheduling, answering questions, managing WhatsApp groups, voice transcription, and more.
+A personal Shlichus AI assistant that runs on WhatsApp, powered by [Nanoclaw](https://github.com/qwibitai/nanoclaw). GabAI helps shluchim with scheduling, answering questions, managing WhatsApp groups, voice transcription, and more.
 
 **[Request access](https://github.com/ChabadLabs/.github/issues/new?template=access-request.yml)** to get started.
 
@@ -33,7 +33,7 @@ Browse, install, and share community-built AI skills. Share your custom skills v
 The power of AI isn't just in the models — it's in how we build together.
 
 - [chabadlabs.ai](https://chabadlabs.ai) — Tools, workshops, and resources
-- [Request access](https://github.com/ChabadLabs/.github/issues/new?template=access-request.yml) — Get started with GabayAI
+- [Request access](https://github.com/ChabadLabs/.github/issues/new?template=access-request.yml) — Get started with GabAI
 - [Join the Builders Chat](https://chabadlabs.ai) — Connect with other shluchim building with AI
 
 ---

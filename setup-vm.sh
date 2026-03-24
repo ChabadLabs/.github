@@ -66,7 +66,7 @@ STEP_LABELS=(
   [13]="PATH setup"
   [14]="Claude Code"
   [15]="Claude Code authentication"
-  [16]="GabayAI bootstrap"
+  [16]="GabAI bootstrap"
   [17]="Code directory"
 )
 TOTAL_STEPS=17
@@ -598,10 +598,10 @@ if ! step_done 15; then
     echo ""
     read -rp "    Paste your Claude API token: " CLAUDE_TOKEN
     if [ -n "$CLAUDE_TOKEN" ]; then
-      mkdir -p "$HOME/.config/gabayai"
-      echo "$CLAUDE_TOKEN" > "$HOME/.config/gabayai/api-key"
-      chmod 600 "$HOME/.config/gabayai/api-key"
-      echo "    Token saved. /gabayai-core:setup will use it when creating .env"
+      mkdir -p "$HOME/.config/gabai"
+      echo "$CLAUDE_TOKEN" > "$HOME/.config/gabai/api-key"
+      chmod 600 "$HOME/.config/gabai/api-key"
+      echo "    Token saved. /gabai-core:setup will use it when creating .env"
     else
       echo "    No token entered — you can set ANTHROPIC_API_KEY later during setup."
     fi
@@ -611,16 +611,16 @@ if ! step_done 15; then
   set_step 15
 fi
 
-# ── 16. GabayAI bootstrap ─────────────────────────────────────────────────
+# ── 16. GabAI bootstrap ─────────────────────────────────────────────────
 if ! step_done 16; then
   if command -v claude &>/dev/null; then
-    echo "==> [16/$TOTAL_STEPS] Installing GabayAI plugins..."
+    echo "==> [16/$TOTAL_STEPS] Installing GabAI plugins..."
     claude plugin marketplace add obra/superpowers
     claude plugin install superpowers@superpowers --scope user
-    claude plugin marketplace add ChabadLabs/GabayMarketplace
-    claude plugin install gabayai-core@gabay-marketplace --scope user
+    claude plugin marketplace add ChabadLabs/GabAIskills
+    claude plugin install gabai-core@gabai-skills --scope user
   else
-    echo "    [skip] Claude Code not installed — skipping GabayAI plugins"
+    echo "    [skip] Claude Code not installed — skipping GabAI plugins"
   fi
   set_step 16
 fi
@@ -641,7 +641,7 @@ rm -f "$SCRIPT_PATH"
 echo ""
 echo "  Your server is ready! Now open Claude Code and run:"
 echo ""
-echo "    /gabayai-core:setup"
+echo "    /gabai-core:setup"
 echo ""
 echo "  This will set up your personal Shlichus AI assistant."
 echo ""

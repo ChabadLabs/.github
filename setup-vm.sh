@@ -333,6 +333,9 @@ if ! step_done 2; then
         openssh-server yum-utils firewalld
       ;;
   esac
+  # Enable lingering so user-level systemd services (nanoclaw, akiflow-sync,
+  # nanoclaw-rag) start at boot and persist without an active login session.
+  sudo loginctl enable-linger "${USERNAME}"
   set_step 2
 fi
 
@@ -615,10 +618,10 @@ fi
 if ! step_done 16; then
   if command -v claude &>/dev/null; then
     echo "==> [16/$TOTAL_STEPS] Installing GabAI plugins..."
-    claude plugin marketplace add obra/superpowers
-    claude plugin install superpowers@superpowers --scope user
-    claude plugin marketplace add ChabadLabs/GabAIskills
-    claude plugin install gabai-core@gabai-skills --scope user
+    # Don't let one failed plugin install block the others
+    claude plugin install superpowers@claude-plugins-official --scope user || echo "    [warn] superpowers install failed"
+    claude plugin marketplace add ChabadLabs/GabAIskills || echo "    [warn] GabAIskills marketplace add failed"
+    claude plugin install gabai-core@gabai-skills --scope user || echo "    [warn] gabai-core install failed"
   else
     echo "    [skip] Claude Code not installed — skipping GabAI plugins"
   fi

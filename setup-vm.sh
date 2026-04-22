@@ -12,11 +12,31 @@
 
 set -euo pipefail
 
+# ── Preflight: required commands ──────────────────────────────────────────
+# curl + sudo are not installed by the script but used from step 1 onward.
+# On Debian minimal, neither is installed; bail early with a clear message.
+for __cmd in bash sudo curl realpath systemctl; do
+  if ! command -v "$__cmd" >/dev/null 2>&1; then
+    echo "Error: required command '$__cmd' not found." >&2
+    echo "       Install it before running this script. On Debian minimal:" >&2
+    echo "         su -c \"apt update && apt install -y sudo curl\"" >&2
+    exit 1
+  fi
+done
+
 SCRIPT_PATH="$(realpath "$0")"
 STATE_FILE="$HOME/.setup-vm-state"
 SKIP_FILE="$HOME/.setup-vm-skip"
 RESUME_MARKER="# __setup-vm-resume__"
-USERNAME="${USER}"
+USERNAME="${USER:-$(id -un)}"
+
+# Refuse to run when $0 is not a regular file (e.g. `curl | bash`). Resume
+# hooks and self-deletion both depend on a stable on-disk path.
+if [ ! -f "$SCRIPT_PATH" ]; then
+  echo "Error: this script must be run from a file, not piped from stdin." >&2
+  echo "       Run: curl -fsSL <url> -o ~/setup-vm.sh && bash ~/setup-vm.sh" >&2
+  exit 1
+fi
 
 # ── Detect package manager and distro ────────────────────────────────────────
 if command -v apt-get &>/dev/null; then
@@ -32,6 +52,7 @@ fi
 
 . /etc/os-release
 DISTRO_ID="${ID}"
+DISTRO_VERSION_ID="${VERSION_ID:-}"
 
 pkg_update() {
   case "$PKG_MGR" in
@@ -83,8 +104,6 @@ MENU_ITEMS=(
   "12|Node.js LTS (via NodeSource repo)"
   "14|Claude Code (AI coding assistant)"
 )
-
-declare -A STEP_DEPS=( [11]=10 )
 
 # ── State management ───────────────────────────────────────────────────────
 get_step() { cat "$STATE_FILE" 2>/dev/null || echo "0"; }
@@ -184,7 +203,8 @@ show_menu() {
   echo "  steps below and re-run the script later."
   echo ""
   echo "  Use the menu below to customize."
-  echo "  Core steps (update, PATH setup) always run."
+  echo "  Core steps (system update, essentials, PATH, Claude token,"
+  echo "  GabAI plugins, ~/code) always run and can't be unchecked."
   echo ""
   echo "  Controls:"
   echo "    Up/Down  Move cursor"
@@ -284,8 +304,8 @@ show_menu() {
 STEP="$(get_step)"
 if [ "$STEP" -eq 0 ]; then
   show_menu
-else
-  echo "==> Resuming setup from step $((STEP + 1)): ${STEP_LABELS[$((STEP + 1))]}"
+elif [ "$STEP" -lt "$TOTAL_STEPS" ]; then
+  echo "==> Resuming setup from step $((STEP + 1)): ${STEP_LABELS[$((STEP + 1))]:-unknown}"
 fi
 
 # ── Helper: run or skip ──────────────────────────────────────────────────────
@@ -321,22 +341,41 @@ if ! step_done 2; then
         openssh-server update-notifier-common
       ;;
     dnf|yum)
-      # EPEL is needed for fail2ban and other extras
-      if [ "$DISTRO_ID" = "amzn" ]; then
+      # EPEL is needed for fail2ban and other extras. Handling differs per distro:
+      #   AL2       → amazon-linux-extras install epel
+      #   AL2023    → EPEL is not available; fail2ban must come from elsewhere
+      #   RHEL 9/10 → need CRB enabled, then epel-release from EPEL
+      #   Fedora    → epel-release not needed
+      FAIL2BAN_PKG="fail2ban"
+      if [ "$DISTRO_ID" = "amzn" ] && [ "$DISTRO_VERSION_ID" = "2" ]; then
         pkg_install amazon-linux-extras 2>/dev/null || true
         sudo amazon-linux-extras install epel -y 2>/dev/null || pkg_install epel-release 2>/dev/null || true
+      elif [ "$DISTRO_ID" = "amzn" ] && [ "$DISTRO_VERSION_ID" = "2023" ]; then
+        # AL2023 has no EPEL and no fail2ban in default repos.
+        echo "    [warn] Amazon Linux 2023 has no EPEL — fail2ban will be skipped."
+        FAIL2BAN_PKG=""
+      elif [ "$DISTRO_ID" = "rhel" ] || [ "$DISTRO_ID" = "rocky" ] || [ "$DISTRO_ID" = "almalinux" ]; then
+        sudo dnf config-manager --set-enabled crb 2>/dev/null || true
+        pkg_install "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${DISTRO_VERSION_ID%%.*}.noarch.rpm" 2>/dev/null \
+          || pkg_install epel-release 2>/dev/null || true
       else
         pkg_install epel-release 2>/dev/null || true
       fi
+      # shellcheck disable=SC2086
       pkg_install tmux python3 python3-pip python3-devel \
-        fail2ban curl wget git sqlite ca-certificates gnupg2 \
+        ${FAIL2BAN_PKG} curl wget git sqlite ca-certificates gnupg2 \
         openssh-server yum-utils firewalld
       ;;
   esac
   # Enable lingering so user-level systemd services (nanoclaw, akiflow-sync,
   # nanoclaw-rag) start at boot and persist without an active login session.
-  sudo loginctl enable-linger "${USERNAME}"
+  if command -v loginctl &>/dev/null; then
+    sudo loginctl enable-linger "${USERNAME}" || echo "    [warn] enable-linger failed — user services may not persist"
+  fi
   set_step 2
+  # Step 1 may have pulled in a kernel update — reboot before touching the
+  # firewall/fail2ban so their kernel modules match the running kernel.
+  reboot_if_needed
 fi
 
 # ── 3. Docker Engine + Compose ──────────────────────────────────────────────
@@ -356,14 +395,24 @@ if ! run_step 3; then
       pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
       ;;
     dnf|yum)
-      sudo "$PKG_MGR" config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo 2>/dev/null \
-        || sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-      pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      if [ "$DISTRO_ID" = "amzn" ] && [ "$DISTRO_VERSION_ID" = "2023" ]; then
+        # AL2023: Amazon maintains its own docker package; Docker CE's centos
+        # repo has no 2023/ tree and 404s.
+        pkg_install docker
+        pkg_install docker-compose-plugin 2>/dev/null \
+          || pkg_install docker-compose 2>/dev/null \
+          || echo "    [warn] no docker-compose package available on AL2023 — install manually if needed"
+      else
+        sudo "$PKG_MGR" config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo 2>/dev/null \
+          || sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      fi
       sudo systemctl enable docker
       sudo systemctl start docker
       ;;
   esac
   sudo usermod -aG docker "${USERNAME}"
+  echo "    Note: docker group membership takes effect on next login."
   set_step 3
 fi
 
@@ -414,20 +463,39 @@ fi
 # ── 5. SSH hardening ────────────────────────────────────────────────────────
 if ! run_step 5; then
   echo "==> [5/$TOTAL_STEPS] Hardening SSH..."
-  # sshd_config.d is supported on modern distros; fall back to main config
-  if [ -d /etc/ssh/sshd_config.d ]; then
-    sudo tee /etc/ssh/sshd_config.d/99-hardening.conf > /dev/null <<'SSHD'
+  # Lockout guard: refuse to disable password auth if the current user has
+  # no authorized_keys entries. This is the only step that can lock the
+  # user out of a fresh VM, so we check even though it's slightly paranoid.
+  AUTH_KEYS="$HOME/.ssh/authorized_keys"
+  SSH_PROCEED=1
+  if [ ! -s "$AUTH_KEYS" ]; then
+    echo ""
+    echo "    WARNING: ${AUTH_KEYS} is missing or empty."
+    echo "    Disabling password auth right now could lock you out."
+    echo ""
+    read -rp "    Continue anyway? [y/N] " __ssh_ok
+    if [[ ! "$__ssh_ok" =~ ^[Yy]$ ]]; then
+      echo "    Skipping SSH hardening. Add a key to ${AUTH_KEYS} and re-run."
+      echo "5" >> "$SKIP_FILE"
+      SSH_PROCEED=0
+    fi
+  fi
+  if [ "$SSH_PROCEED" -eq 1 ]; then
+    # sshd_config.d is supported on modern distros; fall back to main config
+    if [ -d /etc/ssh/sshd_config.d ]; then
+      sudo tee /etc/ssh/sshd_config.d/99-hardening.conf > /dev/null <<'SSHD'
 PermitRootLogin no
 PasswordAuthentication no
 SSHD
-  else
-    sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-    sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-  fi
-  if systemctl cat sshd.service &>/dev/null; then
-    sudo systemctl restart sshd
-  else
-    sudo systemctl restart ssh
+    else
+      sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+      sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+    fi
+    if systemctl cat sshd.service &>/dev/null; then
+      sudo systemctl restart sshd
+    else
+      sudo systemctl restart ssh
+    fi
   fi
   set_step 5
 fi
@@ -440,7 +508,7 @@ if ! run_step 6; then
       sudo ufw default deny incoming
       sudo ufw default allow outgoing
       sudo ufw limit OpenSSH
-      echo "y" | sudo ufw enable
+      sudo ufw --force enable
       ;;
     dnf|yum)
       sudo systemctl enable --now firewalld
@@ -456,14 +524,22 @@ fi
 # ── 7. fail2ban ─────────────────────────────────────────────────────────────
 if ! run_step 7; then
   echo "==> [7/$TOTAL_STEPS] Configuring fail2ban..."
-  sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
-  # On firewalld systems, tell fail2ban to use firewalld
-  if [ "$PKG_MGR" != "apt" ] && command -v firewall-cmd &>/dev/null; then
-    sudo sed -i 's/^banaction\s*=.*/banaction = firewallcmd-ipset/' /etc/fail2ban/jail.local
+  if ! command -v fail2ban-server &>/dev/null; then
+    echo "    [skip] fail2ban not installed (no EPEL on this distro?) — skipping"
+    set_step 7
+  else
+    # Don't clobber a pre-existing customized jail.local on re-run
+    if [ ! -f /etc/fail2ban/jail.local ]; then
+      sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+    fi
+    # On firewalld systems, tell fail2ban to use firewalld
+    if [ "$PKG_MGR" != "apt" ] && command -v firewall-cmd &>/dev/null; then
+      sudo sed -i 's/^banaction\s*=.*/banaction = firewallcmd-ipset/' /etc/fail2ban/jail.local
+    fi
+    sudo systemctl enable fail2ban
+    sudo systemctl restart fail2ban
+    set_step 7
   fi
-  sudo systemctl enable fail2ban
-  sudo systemctl restart fail2ban
-  set_step 7
 fi
 
 # ── 8. Passwordless sudo ────────────────────────────────────────────────────
@@ -479,7 +555,17 @@ fi
 if ! run_step 9; then
   echo "==> [9/$TOTAL_STEPS] Installing Tailscale..."
   curl -fsSL https://tailscale.com/install.sh | sh
+  echo ""
+  echo "    Tailscale will print a login URL below. Open it in a browser"
+  echo "    on any device to authorize this machine. The script will"
+  echo "    block here until you complete the login."
+  echo ""
   sudo tailscale up --ssh --accept-routes
+  # If UFW is active, allow Tailscale's tunnel interface through it so
+  # direct peer connections work instead of falling back to DERP relays.
+  if command -v ufw &>/dev/null && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
+    sudo ufw allow in on tailscale0 2>/dev/null || true
+  fi
   # Tailscale network performance optimization (networkd-dispatcher is Debian/Ubuntu only)
   if [ "$PKG_MGR" = "apt" ]; then
     sudo mkdir -p /etc/networkd-dispatcher/routable.d
@@ -509,7 +595,7 @@ if ! run_step 10; then
       (type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
         && sudo mkdir -p -m 755 /etc/apt/keyrings \
         && out=$(mktemp) && wget -nv -O"$out" https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        && cat "$out" | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+        && sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null < "$out" \
         && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
         && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
            | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
@@ -571,7 +657,7 @@ fi
 # ── 13. PATH setup ──────────────────────────────────────────────────────────
 if ! step_done 13; then
   echo "==> [13/$TOTAL_STEPS] Configuring PATH..."
-  if ! grep -q 'HOME/.local/bin' "$HOME/.bashrc"; then
+  if [ ! -f "$HOME/.bashrc" ] || ! grep -qF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.bashrc"; then
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
   fi
   export PATH="$HOME/.local/bin:$PATH"
@@ -639,7 +725,13 @@ fi
 # DONE — clean up
 # ═══════════════════════════════════════════════════════════════════════════
 remove_resume_hook
-rm -f "$SCRIPT_PATH"
+# Only self-delete if the script lives under the user's home or /tmp.
+# Defends against `sudo bash setup-vm.sh` somehow resolving $0 to a system
+# binary, which would turn `rm -f "$SCRIPT_PATH"` into a disaster.
+case "$SCRIPT_PATH" in
+  "$HOME"/*|/tmp/*|/var/tmp/*) rm -f "$SCRIPT_PATH" ;;
+  *) echo "    (leaving $SCRIPT_PATH in place — not under \$HOME or /tmp)" ;;
+esac
 
 echo ""
 echo "  Your server is ready! Now open Claude Code and run:"
